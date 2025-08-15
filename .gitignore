@@ -1,0 +1,10 @@
+# IDE and OS specific files
+.idea/
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Output directory
+/output/
