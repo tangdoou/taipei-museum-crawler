@@ -31,8 +31,8 @@ def solve_captcha(session, captcha_url, headers):
         return ""
 
 
-def download_single_image(session, item_id, image_info, download_folder, headers, detail_page_url, log_file_path):
-    print(f"\n--- 正在下载新图片: {image_info['name']} ---")
+def download_main_image(session, item_id, image_info, output_filepath, headers, detail_page_url, log_file_path, index):
+    print(f"\n--- 正在下载主图: {os.path.basename(output_filepath)} ---")
     base_url = "https://digitalarchive.npm.gov.tw"
     for attempt in range(MAX_RETRIES):
         print(f"第 {attempt + 1} / {MAX_RETRIES} 次尝试...")
@@ -65,28 +65,31 @@ def download_single_image(session, item_id, image_info, download_folder, headers
                                                "code": final_params['ImageCode']}, headers=headers,
                                        timeout=REQUEST_TIMEOUT, proxies=PROXIES)
             img_response.raise_for_status()
-            file_path = os.path.join(download_folder, f"{image_info['name']}.jpg")
-            with open(file_path, 'wb') as f:
+            with open(output_filepath, 'wb') as f:
                 f.write(img_response.content)
-            print(f"图片成功下载至: {file_path}")
+            print(f"主图成功下载至: {output_filepath}")
             return True
         else:
             print(f"  验证失败 (服务器信息: {validation_data.get('message')})，即将重试...")
             time.sleep(2)
 
-    print(f"--- 图片 {image_info['name']} 尝试{MAX_RETRIES}次后仍然失败 ---")
+    print(f"--- 主图 {os.path.basename(output_filepath)} 尝试{MAX_RETRIES}次后仍然失败 ---")
     with open(log_file_path, "a", encoding="utf-8") as f:
-        log_entry = {"detail_page_url": detail_page_url, "image_info": image_info,
-                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")}
+        log_entry = {
+            "index": index,
+            "detail_page_url": detail_page_url, 
+            "image_info": image_info,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
         f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
     return False
 
 
-def run_scraper_for_url(page_url, headers, project_root):
-    """对单个详情页进行完整的图片抓取流程，采用精准断点续传。"""
-    LOG_FILE_PATH = os.path.join(project_root, 'output', 'failed_images.log')
-    DOWNLOAD_ROOT_DIR = os.path.join(project_root, 'output', 'taipei_museum_artifacts')
-    os.makedirs(DOWNLOAD_ROOT_DIR, exist_ok=True)
+def run_scraper_for_url(page_url, headers, project_root, index):
+    """对单个详情页抓取主图。"""
+    LOG_FILE_PATH = os.path.join(project_root, 'output', 'failed_main_images.log')
+    MAIN_IMAGE_DIR = os.path.join(project_root, 'output', 'main_images')
+    os.makedirs(MAIN_IMAGE_DIR, exist_ok=True)
 
     with requests.Session() as session:
         try:
@@ -95,42 +98,37 @@ def run_scraper_for_url(page_url, headers, project_root):
             html_content = response.text
             soup = BeautifulSoup(html_content, 'html.parser')
 
-            item_id_match = re.search(r"GetJson?cid=(\d+)", html_content)
+            item_id_match = re.search(r"GetJson\?cid=(\d+)", html_content)
             item_id = item_id_match.group(1) if item_id_match else None
             gallery_div = soup.find('div', id='gallery')
             image_tags = gallery_div.find_all('img') if gallery_div else []
 
             if not (item_id and image_tags):
-                tqdm.write(f"错误：在详情页 {page_url} 未找到文物ID或图片列表。")
+                tqdm.write(f"错误(Index: {index})：在详情页 {page_url} 未找到文物ID或图片列表。")
                 return
 
-            image_info_list = [
-                {'name': tag.get('data-image-name'), 'id': tag.get('data-image-id'), 'code': tag.get('data-image-code')}
-                for tag in image_tags]
-            
+            main_image_info = {
+                'name': image_tags[0].get('data-image-name'), 
+                'id': image_tags[0].get('data-image-id'), 
+                'code': image_tags[0].get('data-image-code')
+            }
+
             page_title = soup.title.string.strip().replace(' ', '_').replace('　', '_')
             safe_page_title = re.sub(r'[\\/:*?"<>|]', '_', page_title)
-            download_folder = os.path.join(DOWNLOAD_ROOT_DIR, safe_page_title)
-            os.makedirs(download_folder, exist_ok=True)
+            # 使用 序号_标题.jpg 格式命名
+            output_filename = f"{index:05d}_{safe_page_title}.jpg"
+            output_filepath = os.path.join(MAIN_IMAGE_DIR, output_filename)
 
-            expected_filenames = {f"{info['name']}.jpg" for info in image_info_list}
-            existing_filenames = set(os.listdir(download_folder))
-            missing_files_info = [info for info in image_info_list if f"{info['name']}.jpg" not in existing_filenames]
-
-            if not missing_files_info:
-                tqdm.write(f"文件夹 '{safe_page_title}' 内容已完整，精准跳过。")
+            if os.path.exists(output_filepath):
+                tqdm.write(f"主图 '{os.path.basename(output_filepath)}' 已存在，跳过。")
                 return
-            else:
-                tqdm.write(f"文件夹 '{safe_page_title}' 检查完毕，发现 {len(missing_files_info)} / {len(expected_filenames)} 个文件需要下载。")
 
-            for i, single_image in enumerate(missing_files_info):
-                success = download_single_image(session, item_id, single_image, download_folder, headers, page_url, LOG_FILE_PATH)
-                if not success:
-                    tqdm.write(f"警告：图片 {single_image['name']} 未能成功下载，详情已记录到 {LOG_FILE_PATH}")
-                if i < len(missing_files_info) - 1:
-                    time.sleep(1)
+            success = download_main_image(session, item_id, main_image_info, output_filepath, headers, page_url, LOG_FILE_PATH, index)
+            if not success:
+                tqdm.write(f"警告(Index: {index})：主图 {main_image_info['name']} 未能成功下载，详情已记录到 {LOG_FILE_PATH}")
+
         except Exception as e:
-            tqdm.write(f"处理详情页 {page_url} 时发生严重错误: {e}")
+            tqdm.write(f"处理URL (Index: {index}, URL: {page_url}) 时发生严重错误: {e}")
 
 
 if __name__ == '__main__':
@@ -138,7 +136,7 @@ if __name__ == '__main__':
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
     URL_FILE = os.path.join(PROJECT_ROOT, 'output', 'urls.txt')
-    LOG_FILE = os.path.join(PROJECT_ROOT, 'output', 'failed_images.log')
+    LOG_FILE = os.path.join(PROJECT_ROOT, 'output', 'failed_main_images.log')
     # ---
 
     if not os.path.exists(URL_FILE):
@@ -151,21 +149,23 @@ if __name__ == '__main__':
         START_INDEX = 1
         END_INDEX = 10
 
+        # 根据起始索引号切片
         urls_to_process = urls_to_scrape[START_INDEX - 1:END_INDEX] if END_INDEX is not None else urls_to_scrape[START_INDEX - 1:]
         print(f"本次任务将处理第 {START_INDEX} 到 {END_INDEX if END_INDEX is not None else len(urls_to_scrape)} 个URL，共计 {len(urls_to_process)} 个。")
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'}
 
-        for url in tqdm(urls_to_process, desc="下载总进度"):
+        # 使用 enumerate 来获取每个URL的索引 (从START_INDEX开始)
+        for index, url in enumerate(tqdm(urls_to_process, desc="主图下载进度"), start=START_INDEX):
             try:
-                run_scraper_for_url(url, headers, PROJECT_ROOT)
-                tqdm.write("--- 单个文物处理完毕，休息3秒 ---")
+                run_scraper_for_url(url, headers, PROJECT_ROOT, index)
+                tqdm.write(f"--- (Index: {index})单个文物主图处理完毕，休息3秒 ---")
                 time.sleep(3)
             except Exception as e:
-                tqdm.write(f"处理URL {url} 时发生顶级未知错误: {e}。将继续处理下一个URL。")
+                tqdm.write(f"处理URL (Index: {index}, URL: {url}) 时发生顶级未知错误: {e}。将继续处理下一个URL。")
                 time.sleep(5)
 
-        print("\n本次指定的下载任务已全部完成！")
+        print("\n本次指定的主图下载任务已全部完成！")
         if os.path.exists(LOG_FILE):
-            print(f"\n警告：有部分图片下载失败，详情请查看 {LOG_FILE} 文件。")
+            print(f"\n警告：有部分主图下载失败，详情请查看 {LOG_FILE} 文件。")

@@ -79,7 +79,7 @@ def parse_conservation_info(div_tag):
     return data
 
 
-# --- 主抓取函数 (已修复解析错误) ---
+# --- 主抓取函数 ---
 def scrape_artifact_metadata(url, headers):
     try:
         response = requests.get(url, headers=headers, timeout=30)
@@ -110,47 +110,42 @@ def scrape_artifact_metadata(url, headers):
 
         for section_name, (div_id, parse_func) in sections_to_scrape.items():
             section_div = soup.find('div', id=div_id)
-            # --- 关键修复：在操作前，先判断section_div是否存在 ---
             if section_div:
                 target_tag = section_div.find('table') if "table" in parse_func.__name__ else section_div
                 artifact_data[section_name] = parse_func(target_tag)
             else:
-                artifact_data[section_name] = {}  # 如果整个部分不存在，则记录为空字典
+                artifact_data[section_name] = {} 
         return artifact_data
     except Exception as e:
-        # 使用tqdm.write打印，避免打乱进度条
         tqdm.write(f"处理URL {url} 时发生错误: {e}")
         return None
 
 
 if __name__ == '__main__':
-    URL_FILE = "output/urls.txt"
-    JSON_OUTPUT_DIR = "output/metadata_json"
-    CSV_OUTPUT_FILE = "output/metadata.csv"
+    # --- 动态路径处理 ---
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+    URL_FILE = os.path.join(PROJECT_ROOT, 'output', 'urls.txt')
+    JSON_OUTPUT_DIR = os.path.join(PROJECT_ROOT, 'output', 'metadata_json')
+    CSV_OUTPUT_FILE = os.path.join(PROJECT_ROOT, 'output', 'metadata.csv')
+    # ---
 
     os.makedirs(JSON_OUTPUT_DIR, exist_ok=True)
 
     if not os.path.exists(URL_FILE):
-        print(f"错误: 未找到URL列表文件 '{URL_FILE}'。")
+        print(f"错误: 未找到URL列表文件 '{URL_FILE}'。请先运行 src/harvest_urls.py")
     else:
         with open(URL_FILE, "r", encoding="utf-8") as f:
             urls_to_scrape = [line.strip() for line in f if line.strip()]
 
         print(f"从 '{URL_FILE}' 文件中加载了 {len(urls_to_scrape)} 个URL。")
 
-        # ==================== 在这里配置您的分布式任务 ====================
-        # 您可以在不同的电脑上设置不同的范围，来实现分布式爬取
-        # 电脑1: START_INDEX = 1, END_INDEX = 5000
-        # 电脑2: START_INDEX = 5001, END_INDEX = 10000
-        # 电脑3: START_INDEX = 10001, END_INDEX = None
+        # 在这里配置您的爬取范围
         START_INDEX = 1
-        END_INDEX = 100  # 先用一个小范围测试，确保一切正常
-        # ==========================================================
+        END_INDEX = 10
 
-        urls_to_process = urls_to_scrape[START_INDEX - 1:END_INDEX] if END_INDEX is not None else urls_to_scrape[
-                                                                                                  START_INDEX - 1:]
-        print(
-            f"本次任务将处理第 {START_INDEX} 到 {END_INDEX if END_INDEX is not None else len(urls_to_scrape)} 个URL，共计 {len(urls_to_process)} 个。")
+        urls_to_process = urls_to_scrape[START_INDEX - 1:END_INDEX] if END_INDEX is not None else urls_to_scrape[START_INDEX - 1:]
+        print(f"本次任务将处理第 {START_INDEX} 到 {END_INDEX if END_INDEX is not None else len(urls_to_scrape)} 个URL，共计 {len(urls_to_process)} 个。")
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'}
@@ -161,14 +156,12 @@ if __name__ == '__main__':
             writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
             if f.tell() == 0: writer.writeheader()
 
-            # --- 回归到简单的单线程循环 ---
             for url in tqdm(urls_to_process, desc="元数据采集中"):
                 item_id_match = re.search(r'Detail/(\d+)', url)
                 if item_id_match:
                     unique_id = item_id_match.group(1)
                     json_filepath = os.path.join(JSON_OUTPUT_DIR, f"artifact_{unique_id}.json")
                     if os.path.exists(json_filepath):
-                        # tqdm.write(f"JSON文件已存在，跳过: {json_filepath}")
                         continue
 
                 metadata = scrape_artifact_metadata(url, headers)
@@ -188,6 +181,6 @@ if __name__ == '__main__':
                             flat_data[key] = value
                     writer.writerow(flat_data)
 
-                time.sleep(1)  # 单线程下，稍短的延时即可
+                time.sleep(1)
 
         print(f"\n任务完成！元数据已保存至CSV文件 '{CSV_OUTPUT_FILE}' 及JSON文件夹 '{JSON_OUTPUT_DIR}'。")
